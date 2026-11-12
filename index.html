@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Giám sát Bể Thủy Sản</title>
+    <!-- Thư viện MQTT và Vẽ biểu đồ -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; background: #eef2f3; margin: 0; padding: 20px;}
+        h2 { color: #333; }
+        .card-container { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; margin-bottom: 30px;}
+        .card { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); width: 220px; }
+        .card h3 { margin-top: 0; color: #555; font-size: 18px;}
+        .data-value { font-size: 32px; font-weight: bold; color: #007bff; }
+        .controls { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); display: inline-block; margin-bottom: 30px;}
+        button { padding: 12px 24px; font-size: 16px; margin: 5px; cursor: pointer; border-radius: 8px; border: none; font-weight: bold; transition: 0.2s;}
+        button:active { transform: scale(0.95); }
+        .btn-on-pump { background-color: #28a745; color: white; }
+        .btn-off { background-color: #6c757d; color: white; }
+        .btn-on-valve { background-color: #dc3545; color: white; }
+        .chart-container { width: 90%; max-width: 800px; margin: auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1);}
+        #status { font-weight: bold; color: orange; margin-bottom: 20px;}
+    </style>
+</head>
+<body>
+    <h2>Hệ Thống Giám Sát Môi Trường Bể Nuôi</h2>
+    <div id="status">Đang kết nối đến MQTT Broker...</div>
+    
+    <div class="card-container">
+        <div class="card">
+            <h3>Mực nước</h3>
+            <div class="data-value" id="waterLevel">-- cm</div>
+        </div>
+        <div class="card">
+            <h3>Nhiệt độ nước</h3>
+            <div class="data-value" id="temperature">-- °C</div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <h3>Điều khiển thủ công</h3>
+        <button class="btn-on-pump" onclick="sendCmd('pump', 'ON')">Bật Bơm (Xanh)</button>
+        <button class="btn-off" onclick="sendCmd('pump', 'OFF')">Tắt Bơm</button>
+        <button class="btn-on-valve" onclick="sendCmd('valve', 'ON')">Mở Van (Đỏ)</button>
+        <button class="btn-off" onclick="sendCmd('valve', 'OFF')">Đóng Van</button>
+    </div>
+
+    <div class="chart-container">
+        <canvas id="myChart"></canvas>
+    </div>
+
+    <script>
+        // 1. Cấu hình MQTT Broker (Public HiveMQ)
+        const broker = "broker.hivemq.com";
+        const port = 8000; // Cổng 8000 dành cho WebSockets
+        const clientId = "WebUI_" + Math.random().toString(16).substr(2, 8);
+        const client = new Paho.MQTT.Client(broker, port, clientId);
+
+        // 2. Cấu hình Biểu đồ Chart.js
+        const ctx = document.getElementById('myChart').getContext('2d');
+        const myChart = new Chart(ctx, {
+            type: 'line',
+            data: { 
+                labels: [], 
+                datasets: [
+                    { label: 'Mực nước (cm)', borderColor: '#007bff', backgroundColor: 'rgba(0, 123, 255, 0.1)', data: [], tension: 0.3, fill: true },
+                    { label: 'Nhiệt độ (°C)', borderColor: '#dc3545', backgroundColor: 'transparent', data: [], tension: 0.3 }
+                ]
+            },
+            options: { responsive: true, scales: { y: { beginAtZero: true } } }
+        });
+
+        // 3. Xử lý khi nhận được dữ liệu từ ESP32
+        client.onMessageArrived = function(message) {
+            if(message.destinationName === "aquaculture/data") {
+                // Phân tích chuỗi JSON nhận được
+                let data = JSON.parse(message.payloadString);
+                
+                // Hiển thị lên Thẻ (Card)
+                document.getElementById("waterLevel").innerText = data.distance + " cm";
+                document.getElementById("temperature").innerText = data.temp + " °C";
+                
+                // Cập nhật biểu đồ (Giữ tối đa 15 điểm để không bị tràn)
+                let time = new Date().toLocaleTimeString();
+                if(myChart.data.labels.length > 15) { 
+                    myChart.data.labels.shift(); 
+                    myChart.data.datasets[0].data.shift(); 
+                    myChart.data.datasets[1].data.shift(); 
+                }
+                myChart.data.labels.push(time);
+                myChart.data.datasets[0].data.push(data.distance);
+                myChart.data.datasets[1].data.push(data.temp);
+                myChart.update();
+            }
+        };
+
+        // 4. Kết nối tới Broker
+        client.connect({
+            onSuccess: function() {
+                document.getElementById("status").innerText = "Đã kết nối trực tiếp với thiết bị!";
+                document.getElementById("status").style.color = "green";
+                client.subscribe("aquaculture/data"); // Đăng ký lắng nghe dữ liệu
+            },
+            onFailure: function(e) {
+                document.getElementById("status").innerText = "Mất kết nối. Đang thử lại...";
+                document.getElementById("status").style.color = "red";
+                console.log(e);
+            }
+        });
+
+        // 5. Hàm gửi lệnh từ nút bấm
+        function sendCmd(device, state) {
+            let topic = "aquaculture/control/" + device;
+            let message = new Paho.MQTT.Message(state);
+            message.destinationName = topic;
+            client.send(message);
+        }
+    </script>
+</body>
+</html>
